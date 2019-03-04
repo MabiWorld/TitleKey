@@ -19,7 +19,7 @@
  * http://www.gnu.org/copyleft/gpl.html
  */
 
-class TitleKey {
+class TitleKey extends SearchMySQL {
 	static $deleteIds = [];
 
 	// Active functions...
@@ -57,7 +57,7 @@ class TitleKey {
 	// Normalization...
 	static function normalize( $text ) {
 		global $wgContLang;
-		return $wgContLang->caseFold( $text );
+		return str_replace(' ', '', $wgContLang->caseFold( $text ));
 	}
 
 	// Hook functions....
@@ -68,8 +68,31 @@ class TitleKey {
 	// SearchGetNearMatch hook point.
 	public static function setup() {
 		global $wgHooks;
-		$wgHooks['PrefixSearchBackend'][] = 'TitleKey::prefixSearchBackend';
+		#$wgHooks['PrefixSearchBackend'][] = 'TitleKey::prefixSearchBackend';
 		$wgHooks['SearchGetNearMatch'][] = 'TitleKey::searchGetNearMatch';
+	}
+
+	protected function normalizeNamespaces( $search ) {
+		global $wgLang;
+		// This doesn't seem to be working in core? Temporary override.
+		$ns = [ NS_MAIN ];
+
+		if ( $search ) {
+			$parts = explode(':', $search);
+			$search = array_pop($parts);
+ 
+			$nst = array();
+			foreach( $parts as $part ) {
+				$nsi = $wgLang->getNsIndex($part);
+				if ( $nsi !== false) $nst[] = $nsi;
+			}
+ 
+			if ( $nst ) $ns = $nst;
+		}
+
+		#$this->setNamespaces( $ns );
+		$this->namespaces = $ns;
+		return $search;
 	}
 
 	static function updateDeleteSetup( $article, $user, $reason ) {
@@ -157,13 +180,10 @@ class TitleKey {
 	 * Override the default OpenSearch backend...
 	 *
 	 * @param string $search term
-	 * @param int $limit max number of items to return
-	 * @param array &$results out param -- list of title strings
-	 * @param int $offset number of items to offset
 	 */
-	static function prefixSearchBackend( $ns, $search, $limit, &$results, $offset = 0 ) {
-		$results = self::prefixSearch( $ns, $search, $limit, $offset );
-		return false;
+	function completionSearchBackend( $search ) {
+		$results = self::prefixSearch( $this->namespaces, $search, $this->limit, $this->offset );
+		return SearchSuggestionSet::fromTitles( $results );
 	}
 
 	static function prefixSearch( $namespaces, $search, $limit, $offset ) {
@@ -195,7 +215,7 @@ class TitleKey {
 		$srchres = [];
 		foreach ( $result as $row ) {
 			$title = Title::makeTitle( $row->page_namespace, $row->page_title );
-			$srchres[] = $title->getPrefixedText();
+			$srchres[] = $title; #->getPrefixedText();
 		}
 		$result->free();
 
