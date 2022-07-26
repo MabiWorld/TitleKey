@@ -225,7 +225,7 @@ class TitleKey extends SearchMySQL {
 
 	static function prefixSearch( $namespaces, $search, $limit, $offset ) {
 		$dbr = wfGetDB( DB_REPLICA );
-		$sql = $this->buildPrefixSearchQuery(
+		$sql = self::buildPrefixSearchQuery(
 			$dbr, $namespaces, $search, $limit, $offset, __METHOD__
 		);
 		$result = $dbr->query( $sql, __METHOD__ );
