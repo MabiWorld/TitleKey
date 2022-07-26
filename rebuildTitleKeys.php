@@ -8,7 +8,9 @@ require_once "$IP/maintenance/Maintenance.php";
 
 // In case we want to do offline initialization...
 if ( !class_exists( 'TitleKey' ) ) {
-	require dirname( dirname( dirname( __FILE__ ) ) ) . '/includes/search/SearchEngine.php';
+	require "$IP/includes/search/SearchEngine.php";
+	require "$IP/includes/search/SearchDatabase.php";
+	require "$IP/includes/search/SearchMySQL.php";
 	require __DIR__ . '/TitleKey_body.php';
 }
 

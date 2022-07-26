@@ -4,6 +4,7 @@ CREATE TABLE /*$wgDBprefix*/titlekey (
 
   -- Keep a denormalized copy of the namespace for filtering
   tk_namespace int NOT NULL,
+  tk_subpages int NOT NULL,
 
   -- Normalized title.
   -- With namespace prefix, case-folded, in space form.

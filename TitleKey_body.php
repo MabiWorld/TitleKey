@@ -39,10 +39,12 @@ class TitleKey extends SearchMySQL {
 	static function setBatchKeys( $titles ) {
 		$rows = [];
 		foreach ( $titles as $id => $title ) {
+			$title_text = $title->getText();
 			$rows[] = [
 				'tk_page' => $id,
 				'tk_namespace' => $title->getNamespace(),
-				'tk_key' => self::normalize( $title->getText() ),
+				'tk_subpages' => substr_count($title_text, '/'),
+				'tk_key' => self::normalize( $title_text ),
 			];
 		}
 		$dbw = wfGetDB( DB_MASTER );
@@ -186,7 +188,7 @@ class TitleKey extends SearchMySQL {
 		return SearchSuggestionSet::fromTitles( $results );
 	}
 
-	static function prefixSearch( $namespaces, $search, $limit, $offset ) {
+	static function buildPrefixSearchQuery( $dbr, $namespaces, $search, $limit, $offset, $method ) {
 		$ns = array_shift( $namespaces ); // support only one namespace
 		if ( in_array( NS_MAIN, $namespaces ) ) {
 			$ns = NS_MAIN; // if searching on many always default to main
@@ -194,27 +196,44 @@ class TitleKey extends SearchMySQL {
 
 		$key = self::normalize( $search );
 
-		$dbr = wfGetDB( DB_REPLICA );
-		$result = $dbr->select(
-			[ 'titlekey', 'page' ],
-			[ 'page_namespace', 'page_title' ],
+		return $dbr->selectSQLText(
+			[ 'page', 'titlekey', 'redirect' ],
+			[
+				'COALESCE(rd_namespace, page_namespace) AS namespace',
+				'COALESCE(rd_title, page_title) AS title'
+			],
 			[
 				'tk_page = page_id',
 				'tk_namespace' => $ns,
 				'tk_key ' . $dbr->buildLike( $key, $dbr->anyString() ),
 			],
-			__METHOD__,
+			$method,
 			[
-				'ORDER BY' => 'tk_key',
+				'ORDER BY' => ['page_is_redirect', 'tk_subpages', 'tk_key'],
 				'LIMIT' => $limit,
 				'OFFSET' => $offset,
+				'DISTINCT',
+			],
+			[
+				'redirect' => [
+					'LEFT JOIN',
+					'tk_page = rd_from',
+				],
 			]
 		);
+	}
+
+	static function prefixSearch( $namespaces, $search, $limit, $offset ) {
+		$dbr = wfGetDB( DB_REPLICA );
+		$sql = $this->buildPrefixSearchQuery(
+			$dbr, $namespaces, $search, $limit, $offset, __METHOD__
+		);
+		$result = $dbr->query( $sql, __METHOD__ );
 
 		// Reformat useful data for future printing by JSON engine
 		$srchres = [];
 		foreach ( $result as $row ) {
-			$title = Title::makeTitle( $row->page_namespace, $row->page_title );
+			$title = Title::makeTitle( $row->namespace, $row->title );
 			$srchres[] = $title; #->getPrefixedText();
 		}
 		$result->free();

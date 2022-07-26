@@ -4,6 +4,7 @@
 CREATE TABLE titlekey (
   tk_page       INTEGER   NOT NULL PRIMARY KEY,
   tk_namespace  SMALLINT  NOT NULL,
+  tk_subpages   SMALLINT  NOT NULL,
   tk_key        TEXT      NOT NULL
 );
 

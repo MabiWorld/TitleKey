@@ -29,7 +29,7 @@ $wgSearchType = 'TitleKey';
 
 You must then create and populate the new database table.
 
-The easiest way to do this is to run MediaWIki's standard updaters:
+The easiest way to do this is to run MediaWiki's standard updaters:
 
 ```sh
 php maintenance/update.php
