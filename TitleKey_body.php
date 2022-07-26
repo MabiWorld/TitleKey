@@ -238,6 +238,8 @@ class TitleKey extends SearchMySQL {
 		}
 		$result->free();
 
+		sort( $srchres, SORT_NATURAL | SORT_FLAG_CASE );
+
 		return $srchres;
 	}
 
