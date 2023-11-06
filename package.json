@@ -1,12 +1,13 @@
 {
+	"name": "TitleKey",
 	"private": true,
 	"scripts": {
 		"test": "grunt test"
 	},
 	"devDependencies": {
-		"grunt": "1.0.3",
-		"grunt-banana-checker": "0.5.0",
-		"grunt-contrib-jshint": "1.1.0",
-		"grunt-jsonlint": "1.1.0"
+		"eslint-config-wikimedia": "0.25.0",
+		"grunt": "1.6.1",
+		"grunt-banana-checker": "0.10.0",
+		"grunt-eslint": "24.0.1"
 	}
 }

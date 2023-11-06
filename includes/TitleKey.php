@@ -1,7 +1,7 @@
 <?php
 /**
  * Copyright (C) 2008 Brion Vibber <brion@pobox.com>
- * http://www.mediawiki.org/
+ * https://www.mediawiki.org/
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,12 +19,23 @@
  * http://www.gnu.org/copyleft/gpl.html
  */
 
+use MediaWiki\Linker\LinkTarget;
+use MediaWiki\MediaWikiServices;
+use MediaWiki\User\UserIdentity;
+
 class TitleKey extends SearchMySQL {
 	static $deleteIds = [];
 
-	// Active functions...
-	static function deleteKey( $id ) {
-		$dbw = wfGetDB( DB_MASTER );
+	/** @var array */
+	private static $deleteIds = [];
+
+	/**
+	 * Active functions...
+	 *
+	 * @param int $id
+	 */
+	private static function deleteKey( $id ) {
+		$dbw = wfGetDB( DB_PRIMARY );
 		$dbw->delete(
 			'titlekey',
 			[ 'tk_page' => $id ],
@@ -32,11 +43,18 @@ class TitleKey extends SearchMySQL {
 		);
 	}
 
-	static function setKey( $id, $title ) {
+	/**
+	 * @param int $id
+	 * @param LinkTarget[] $title
+	 */
+	private static function setKey( $id, LinkTarget $title ) {
 		self::setBatchKeys( [ $id => $title ] );
 	}
 
-	static function setBatchKeys( $titles ) {
+	/**
+	 * @param LinkTarget[] $titles
+	 */
+	public static function setBatchKeys( $titles ) {
 		$rows = [];
 		foreach ( $titles as $id => $title ) {
 			$title_text = $title->getText();
@@ -47,7 +65,7 @@ class TitleKey extends SearchMySQL {
 				'tk_key' => self::normalize( $title_text ),
 			];
 		}
-		$dbw = wfGetDB( DB_MASTER );
+		$dbw = wfGetDB( DB_PRIMARY );
 		$dbw->replace(
 			'titlekey',
 			[ 'tk_page' ],
@@ -56,22 +74,28 @@ class TitleKey extends SearchMySQL {
 		);
 	}
 
-	// Normalization...
+	/**
+	 * Normalization...
+	 *
+	 * @param string $text
+	 * @return string
+	 */
 	static function normalize( $text ) {
-		global $wgContLang;
-		return str_replace(' ', '', $wgContLang->caseFold( $text ));
+		return str_replace(' ', '', MediaWikiServices::getInstance()->getContentLanguage()->caseFold( $text ));
 	}
 
 	// Hook functions....
 
-	// Delay setup to avoid compatibility problems with hook ordering
-	// when coexisting with MWSearch... we want MWSearch to be able to
-	// take over the PrefixSearchBackend hook without disabling the
-	// SearchGetNearMatch hook point.
+	/**
+	 * Delay setup to avoid compatibility problems with hook ordering
+	 * when coexisting with MWSearch... we want MWSearch to be able to
+	 * take over the PrefixSearchBackend hook without disabling the
+	 * SearchGetNearMatch hook point.
+	 */
 	public static function setup() {
-		global $wgHooks;
-		#$wgHooks['PrefixSearchBackend'][] = 'TitleKey::prefixSearchBackend';
-		$wgHooks['SearchGetNearMatch'][] = 'TitleKey::searchGetNearMatch';
+		$hookContainer = MediaWikiServices::getInstance()->getHookContainer();
+		#$hookContainer->register( 'PrefixSearchBackend', 'TitleKey::prefixSearchBackend' );
+		$hookContainer->register( 'SearchGetNearMatch', 'TitleKey::searchGetNearMatch' );
 	}
 
 	protected function normalizeNamespaces( $search ) {
@@ -97,14 +121,27 @@ class TitleKey extends SearchMySQL {
 		return $search;
 	}
 
-	static function updateDeleteSetup( $article, $user, $reason ) {
-		$title = $article->mTitle->getPrefixedText();
+
+	/**
+	 * @param Article $article
+	 * @param User $user
+	 * @param string $reason
+	 * @return bool
+	 */
+	public static function updateDeleteSetup( $article, $user, $reason ) {
+		$title = $article->getTitle()->getPrefixedText();
 		self::$deleteIds[$title] = $article->getID();
 		return true;
 	}
 
-	static function updateDelete( $article, $user, $reason ) {
-		$title = $article->mTitle->getPrefixedText();
+	/**
+	 * @param Article $article
+	 * @param User $user
+	 * @param string $reason
+	 * @return bool
+	 */
+	public static function updateDelete( $article, $user, $reason ) {
+		$title = $article->getTitle()->getPrefixedText();
 		if ( isset( self::$deleteIds[$title] ) ) {
 			self::deleteKey( self::$deleteIds[$title] );
 		}
@@ -113,37 +150,40 @@ class TitleKey extends SearchMySQL {
 
 	/**
 	 * @param WikiPage $wikiPage
-	 * @param User $user
-	 * @param Content $content
-	 * @param string $summary
-	 * @param bool $isMinor
-	 * @param $isWatch
-	 * @param $section
-	 * @param $flags
-	 * @param Revision $revision
 	 * @return bool
 	 */
-	static function updateInsert( $wikiPage, $user, $content, $summary, $isMinor, $isWatch,
-		$section, $flags, $revision ) {
+	public static function updateInsert( $wikiPage ) {
 		self::setKey( $wikiPage->getId(), $wikiPage->getTitle() );
 		return true;
 	}
 
-	static function updateMove( $from, $to, $user, $fromid, $toid ) {
+	/**
+	 * @param LinkTarget $from
+	 * @param LinkTarget $to
+	 * @param UserIdentity $user
+	 * @param int $fromid
+	 * @param int $toid
+	 * @return bool
+	 */
+	public static function updateMove( LinkTarget $from, LinkTarget $to, $user, $fromid, $toid ) {
 		// FIXME
 		self::setKey( $toid, $from );
 		self::setKey( $fromid, $to );
 		return true;
 	}
 
-	static function testTables( &$tables ) {
-		$tables[] = 'titlekey';
-		return true;
-	}
-
-	static function updateUndelete( $title, $isnewid ) {
-		$article = new Article( $title );
-		$id = $article->getID();
+	/**
+	 * @param Title $title
+	 * @param int $isnewid
+	 * @return bool
+	 */
+	public static function updateUndelete( $title, $isnewid ) {
+		if ( method_exists( MediaWikiServices::class, 'getWikiPageFactory' ) ) {
+			// MW 1.36+
+			$id = MediaWikiServices::getInstance()->getWikiPageFactory()->newFromTitle( $title )->getID();
+		} else {
+			$id = WikiPage::factory( $title )->getID();
+		}
 		self::setKey( $id, $title );
 		return true;
 	}
@@ -154,21 +194,24 @@ class TitleKey extends SearchMySQL {
 	 * will populate the table with all titles in the page table.
 	 *
 	 * Status info is sent to stdout.
+	 *
+	 * @param DatabaseUpdater $updater
 	 */
-	public static function schemaUpdates( $updater = null ) {
+	public static function schemaUpdates( $updater ) {
 		$updater->addExtensionUpdate( [ [ __CLASS__, 'runUpdates' ] ] );
-		require_once __DIR__ . '/rebuildTitleKeys.php';
-		$updater->addPostDatabaseUpdateMaintenance( 'RebuildTitleKeys' );
-		return true;
+		$updater->addPostDatabaseUpdateMaintenance( RebuildTitleKeys::class );
 	}
 
+	/**
+	 * @param DatabaseUpdater $updater
+	 */
 	public static function runUpdates( $updater ) {
 		$db = $updater->getDB();
 		if ( $db->tableExists( 'titlekey' ) ) {
 			$updater->output( "...titlekey table already exists.\n" );
 		} else {
 			$updater->output( 'Creating titlekey table...' );
-			$sourceFile = $db->getType() == 'postgres' ? '/titlekey.pg.sql' : '/titlekey.sql';
+			$sourceFile = $db->getType() == 'postgres' ? '/../sql/titlekey.pg.sql' : '/../sql/titlekey.sql';
 			$err = $db->sourceFile( __DIR__ . $sourceFile );
 			if ( $err !== true ) {
 				throw new Exception( $err );
@@ -181,6 +224,7 @@ class TitleKey extends SearchMySQL {
 	/**
 	 * Override the default OpenSearch backend...
 	 *
+	 * @param int[] $ns
 	 * @param string $search term
 	 */
 	function completionSearchBackend( $search ) {
@@ -189,9 +233,11 @@ class TitleKey extends SearchMySQL {
 	}
 
 	static function buildPrefixSearchQuery( $dbr, $namespaces, $search, $limit, $offset, $method ) {
-		$ns = array_shift( $namespaces ); // support only one namespace
+		// support only one namespace
+		$ns = array_shift( $namespaces );
 		if ( in_array( NS_MAIN, $namespaces ) ) {
-			$ns = NS_MAIN; // if searching on many always default to main
+			// if searching on many always default to main
+			$ns = NS_MAIN;
 		}
 
 		$key = self::normalize( $search );
@@ -223,6 +269,13 @@ class TitleKey extends SearchMySQL {
 		);
 	}
 
+	/**
+	 * @param array $namespaces
+	 * @param string $search
+	 * @param int $limit
+	 * @param int $offset
+	 * @return string
+	 */
 	static function prefixSearch( $namespaces, $search, $limit, $offset ) {
 		$dbr = wfGetDB( DB_REPLICA );
 		$sql = self::buildPrefixSearchQuery(
@@ -249,8 +302,9 @@ class TitleKey extends SearchMySQL {
 	 *
 	 * @param string $term
 	 * @param Title outparam &$title
+	 * @return bool
 	 */
-	static function searchGetNearMatch( $term, &$title ) {
+	public static function searchGetNearMatch( $term, &$title ) {
 		$temp = Title::newFromText( $term );
 		if ( $temp ) {
 			$match = self::exactMatchTitle( $temp );
@@ -264,12 +318,21 @@ class TitleKey extends SearchMySQL {
 		return true;
 	}
 
-	static function exactMatchTitle( $title ) {
+	/**
+	 * @param Title $title
+	 * @return Title|null
+	 */
+	private static function exactMatchTitle( $title ) {
 		$ns = $title->getNamespace();
 		return self::exactMatch( $ns, $title->getText() );
 	}
 
-	static function exactMatch( $ns, $text ) {
+	/**
+	 * @param array $ns
+	 * @param string $text
+	 * @return Title|null
+	 */
+	private static function exactMatch( $ns, $text ) {
 		$key = self::normalize( $text );
 
 		$dbr = wfGetDB( DB_REPLICA );

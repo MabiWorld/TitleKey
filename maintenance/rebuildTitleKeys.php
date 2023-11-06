@@ -1,8 +1,10 @@
 <?php
 
+use MediaWiki\MediaWikiServices;
+
 $IP = getenv( 'MW_INSTALL_PATH' );
 if ( $IP === false ) {
-	$IP = __DIR__ . '/../..';
+	$IP = __DIR__ . '/../../..';
 }
 require_once "$IP/maintenance/Maintenance.php";
 
@@ -15,19 +17,21 @@ if ( !class_exists( 'TitleKey' ) ) {
 }
 
 class RebuildTitleKeys extends Maintenance {
-	function __construct() {
+	public function __construct() {
 		parent::__construct();
-		$this->mDescription = "Rebuilds titlekey table entries for all pages in DB.";
+		$this->addDescription( "Rebuilds titlekey table entries for all pages in DB." );
 		$this->setBatchSize( 1000 );
 		$this->addOption( 'start', 'Page ID to start from', false, true );
 
 		$this->requireExtension( 'TitleKey' );
 	}
 
-	function execute() {
+	public function execute() {
 		$start = $this->getOption( 'start', 0 );
 		$this->output( "Rebuilding titlekey table...\n" );
 		$dbr = $this->getDB( DB_REPLICA );
+
+		$lbFactory = MediaWikiServices::getInstance()->getDBLoadBalancerFactory();
 
 		$maxId = $dbr->selectField( 'page', 'MAX(page_id)', '', __METHOD__ );
 
@@ -57,7 +61,7 @@ class RebuildTitleKeys extends Maintenance {
 
 			TitleKey::setBatchKeys( $titles );
 
-			wfWaitForSlaves( 20 );
+			$lbFactory->waitForReplication( [ 'ifWritesSince' => 20 ] );
 		}
 
 		if ( $lastId ) {
@@ -68,5 +72,5 @@ class RebuildTitleKeys extends Maintenance {
 	}
 }
 
-$maintClass = 'RebuildTitleKeys';
+$maintClass = RebuildTitleKeys::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
