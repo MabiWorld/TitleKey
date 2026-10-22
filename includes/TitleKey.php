@@ -24,10 +24,8 @@ use MediaWiki\MediaWikiServices;
 use MediaWiki\User\UserIdentity;
 
 class TitleKey extends SearchMySQL {
-	static $deleteIds = [];
-
 	/** @var array */
-	private static $deleteIds = [];
+	static $deleteIds = [];
 
 	/**
 	 * Active functions...
