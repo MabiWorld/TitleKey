@@ -19,33 +19,73 @@
  * http://www.gnu.org/copyleft/gpl.html
  */
 
-use MediaWiki\Linker\LinkTarget;
-use MediaWiki\MediaWikiServices;
-use MediaWiki\User\UserIdentity;
+namespace MediaWiki\Extension\TitleKey;
 
-class TitleKey extends SearchMySQL {
-	/** @var array */
-	static $deleteIds = [];
+use DatabaseUpdater;
+use ManualLogEntry;
+use MediaWiki\Hook\PageMoveCompletingHook;
+use MediaWiki\Installer\Hook\LoadExtensionSchemaUpdatesHook;
+use MediaWiki\Linker\LinkTarget;
+use MediaWiki\MainConfigNames;
+use MediaWiki\MediaWikiServices;
+use MediaWiki\Page\Hook\PageDeleteCompleteHook;
+use MediaWiki\Page\Hook\PageUndeleteCompleteHook;
+use MediaWiki\Page\ProperPageIdentity;
+use MediaWiki\Permissions\Authority;
+use MediaWiki\Revision\RevisionRecord;
+use MediaWiki\Settings\SettingsBuilder;
+use MediaWiki\Storage\EditResult;
+use MediaWiki\Storage\Hook\PageSaveCompleteHook;
+use MediaWiki\Title\Title;
+use MediaWiki\User\UserIdentity;
+use RebuildTitleKeys;
+use Wikimedia\Rdbms\IExpression;
+use Wikimedia\Rdbms\LikeValue;
+use WikiPage;
+
+class TitleKey implements
+	PageDeleteCompleteHook,
+	PageSaveCompleteHook,
+	PageUndeleteCompleteHook,
+	PageMoveCompletingHook,
+	LoadExtensionSchemaUpdatesHook
+{
+
+	/**
+	 * Set $wgSearchType to one of TitleKey's classes.
+	 * @param mixed[] $schema Extension info (a subset of extension.json).
+	 * @param SettingsBuilder $settingsBuilder
+	 */
+	public static function onRegistration( array $schema, SettingsBuilder $settingsBuilder ): void {
+		$dbType = strtolower( $settingsBuilder->getConfig()->get( 'DBtype' ) );
+		$classNameSuffix = $dbType === 'mysql' ? 'MySQL' : ucfirst( $dbType );
+		$className = 'MediaWiki\\Extension\\TitleKey\\SearchEngine' . $classNameSuffix;
+		if ( !class_exists( $className ) ) {
+			// This should never happen because all three DB types are supported by TitleKey.
+			return;
+		}
+		$settingsBuilder->overrideConfigValue( MainConfigNames::SearchType, $className );
+	}
 
 	/**
 	 * Active functions...
 	 *
 	 * @param int $id
 	 */
-	private static function deleteKey( $id ) {
-		$dbw = wfGetDB( DB_PRIMARY );
-		$dbw->delete(
-			'titlekey',
-			[ 'tk_page' => $id ],
-			__METHOD__
-		);
+	private function deleteKey( $id ) {
+		$dbw = MediaWikiServices::getInstance()->getConnectionProvider()->getPrimaryDatabase();
+		$dbw->newDeleteQueryBuilder()
+			->delete( 'titlekey' )
+			->where( [ 'tk_page' => $id ] )
+			->caller( __METHOD__ )
+			->execute();
 	}
 
 	/**
 	 * @param int $id
-	 * @param LinkTarget[] $title
+	 * @param LinkTarget $title
 	 */
-	private static function setKey( $id, LinkTarget $title ) {
+	private function setKey( $id, LinkTarget $title ) {
 		self::setBatchKeys( [ $id => $title ] );
 	}
 
@@ -63,13 +103,15 @@ class TitleKey extends SearchMySQL {
 				'tk_key' => self::normalize( $title_text ),
 			];
 		}
-		$dbw = wfGetDB( DB_PRIMARY );
-		$dbw->replace(
-			'titlekey',
-			[ 'tk_page' ],
-			$rows,
-			__METHOD__
-		);
+		if ( !$rows ) {
+			return;
+		}
+		$dbw = MediaWikiServices::getInstance()->getConnectionProvider()->getPrimaryDatabase()
+			->newReplaceQueryBuilder()
+			->replaceInto( 'titlekey' )
+			->uniqueIndexFields( [ 'tk_page' ] )
+			->rows( $rows )
+			->caller( __METHOD__ )->execute();
 	}
 
 	/**
@@ -78,8 +120,9 @@ class TitleKey extends SearchMySQL {
 	 * @param string $text
 	 * @return string
 	 */
-	static function normalize( $text ) {
-		return str_replace(' ', '', MediaWikiServices::getInstance()->getContentLanguage()->caseFold( $text ));
+	private static function normalize( $text ) {
+		$contentLanguage = MediaWikiServices::getInstance()->getContentLanguage();
+		return str_replace(' ', '', $contentLanguage->caseFold( $text ));
 	}
 
 	// Hook functions....
@@ -92,98 +135,71 @@ class TitleKey extends SearchMySQL {
 	 */
 	public static function setup() {
 		$hookContainer = MediaWikiServices::getInstance()->getHookContainer();
-		#$hookContainer->register( 'PrefixSearchBackend', 'TitleKey::prefixSearchBackend' );
-		$hookContainer->register( 'SearchGetNearMatch', 'TitleKey::searchGetNearMatch' );
-	}
-
-	protected function normalizeNamespaces( $search ) {
-		global $wgLang;
-		// This doesn't seem to be working in core? Temporary override.
-		$ns = [ NS_MAIN ];
-
-		if ( $search ) {
-			$parts = explode(':', $search);
-			$search = array_pop($parts);
- 
-			$nst = array();
-			foreach( $parts as $part ) {
-				$nsi = $wgLang->getNsIndex($part);
-				if ( $nsi !== false) $nst[] = $nsi;
-			}
- 
-			if ( $nst ) $ns = $nst;
-		}
-
-		#$this->setNamespaces( $ns );
-		$this->namespaces = $ns;
-		return $search;
-	}
-
-
-	/**
-	 * @param Article $article
-	 * @param User $user
-	 * @param string $reason
-	 * @return bool
-	 */
-	public static function updateDeleteSetup( $article, $user, $reason ) {
-		$title = $article->getTitle()->getPrefixedText();
-		self::$deleteIds[$title] = $article->getID();
-		return true;
+		#$hookContainer->register( 'PrefixSearchBackend', [ self::class, 'prefixSearchBackend' ] );
+		$hookContainer->register( 'SearchGetNearMatch', [ self::class, 'searchGetNearMatch' ] );
 	}
 
 	/**
-	 * @param Article $article
-	 * @param User $user
-	 * @param string $reason
-	 * @return bool
+	 * @inheritDoc
 	 */
-	public static function updateDelete( $article, $user, $reason ) {
-		$title = $article->getTitle()->getPrefixedText();
-		if ( isset( self::$deleteIds[$title] ) ) {
-			self::deleteKey( self::$deleteIds[$title] );
-		}
+	public function onPageDeleteComplete(
+		ProperPageIdentity $page,
+		Authority $deleter,
+		string $reason,
+		int $pageID,
+		RevisionRecord $deletedRev,
+		ManualLogEntry $logEntry,
+		int $archivedRevisionCount
+	) {
+		$this->deleteKey( $pageID );
 		return true;
 	}
 
 	/**
 	 * @param WikiPage $wikiPage
-	 * @return bool
-	 */
-	public static function updateInsert( $wikiPage ) {
-		self::setKey( $wikiPage->getId(), $wikiPage->getTitle() );
-		return true;
-	}
-
-	/**
-	 * @param LinkTarget $from
-	 * @param LinkTarget $to
 	 * @param UserIdentity $user
-	 * @param int $fromid
-	 * @param int $toid
-	 * @return bool
+	 * @param string $summary
+	 * @param int $flags
+	 * @param RevisionRecord $revisionRecord
+	 * @param EditResult $editResult
+	 * @return bool|void
 	 */
-	public static function updateMove( LinkTarget $from, LinkTarget $to, $user, $fromid, $toid ) {
-		// FIXME
-		self::setKey( $toid, $from );
-		self::setKey( $fromid, $to );
+	public function onPageSaveComplete( $wikiPage, $user, $summary, $flags, $revisionRecord, $editResult ) {
+		$this->setKey( $wikiPage->getId(), $wikiPage->getTitle() );
 		return true;
 	}
 
 	/**
-	 * @param Title $title
-	 * @param int $isnewid
+	 * @param LinkTarget $old
+	 * @param LinkTarget $new
+	 * @param UserIdentity $user
+	 * @param int $pageid
+	 * @param int $redirid
+	 * @param string $reason
+	 * @param RevisionRecord $revision
 	 * @return bool
 	 */
-	public static function updateUndelete( $title, $isnewid ) {
-		if ( method_exists( MediaWikiServices::class, 'getWikiPageFactory' ) ) {
-			// MW 1.36+
-			$id = MediaWikiServices::getInstance()->getWikiPageFactory()->newFromTitle( $title )->getID();
-		} else {
-			$id = WikiPage::factory( $title )->getID();
-		}
-		self::setKey( $id, $title );
+	public function onPageMoveCompleting( $old, $new, $user, $pageid, $redirid, $reason, $revision ) {
+		$this->setKey( $pageid, $old );
+		$this->setKey( $redirid, $new );
 		return true;
+	}
+
+	/**
+	 * @inheritDoc
+	 */
+	public function onPageUndeleteComplete(
+		ProperPageIdentity $page,
+		Authority $restorer,
+		string $reason,
+		RevisionRecord $restoredRev,
+		ManualLogEntry $logEntry,
+		int $restoredRevisionCount,
+		bool $created,
+		array $restoredPageIds
+	): void {
+		$id = $page->getId();
+		$this->setKey( $id, Title::newFromPageIdentity( $page ) );
 	}
 
 	/**
@@ -195,42 +211,35 @@ class TitleKey extends SearchMySQL {
 	 *
 	 * @param DatabaseUpdater $updater
 	 */
-	public static function schemaUpdates( $updater ) {
-		$updater->addExtensionUpdate( [ [ __CLASS__, 'runUpdates' ] ] );
+	public function onLoadExtensionSchemaUpdates( $updater ) {
+		$dbType = $updater->getDB()->getType();
+		$dir = __DIR__ . '/../db_patches';
+		if ( $dbType !== 'mysql' ) {
+			$dir .= "/$dbType";
+		}
+		$updater->addExtensionTable(
+			'titlekey',
+			"$dir/tables-generated.sql"
+		);
+		if ( $dbType === 'mysql' ) {
+			$updater->modifyExtensionField(
+				'titlekey',
+				'af_actor',
+				"$dir/abstractSchemaChanges/patch-modify-tk_key.sql"
+			);
+		}
+
 		$updater->addPostDatabaseUpdateMaintenance( RebuildTitleKeys::class );
 	}
 
 	/**
-	 * @param DatabaseUpdater $updater
+	 * @param array $namespaces
+	 * @param string $search
+	 * @param int $limit
+	 * @param int $offset
+	 * @return Title[]
 	 */
-	public static function runUpdates( $updater ) {
-		$db = $updater->getDB();
-		if ( $db->tableExists( 'titlekey' ) ) {
-			$updater->output( "...titlekey table already exists.\n" );
-		} else {
-			$updater->output( 'Creating titlekey table...' );
-			$sourceFile = $db->getType() == 'postgres' ? '/../sql/titlekey.pg.sql' : '/../sql/titlekey.sql';
-			$err = $db->sourceFile( __DIR__ . $sourceFile );
-			if ( $err !== true ) {
-				throw new Exception( $err );
-			}
-
-			$updater->output( "ok.\n" );
-		}
-	}
-
-	/**
-	 * Override the default OpenSearch backend...
-	 *
-	 * @param int[] $ns
-	 * @param string $search term
-	 */
-	function completionSearchBackend( $search ) {
-		$results = self::prefixSearch( $this->namespaces, $search, $this->limit, $this->offset );
-		return SearchSuggestionSet::fromTitles( $results );
-	}
-
-	static function buildPrefixSearchQuery( $dbr, $namespaces, $search, $limit, $offset, $method ) {
+	public static function prefixSearch( $namespaces, $search, $limit, $offset ) {
 		// support only one namespace
 		$ns = array_shift( $namespaces );
 		if ( in_array( NS_MAIN, $namespaces ) ) {
@@ -240,66 +249,42 @@ class TitleKey extends SearchMySQL {
 
 		$key = self::normalize( $search );
 
-		return $dbr->selectSQLText(
-			[ 'page', 'titlekey', 'redirect' ],
-			[
+		$dbr = MediaWikiServices::getInstance()->getConnectionProvider()->getReplicaDatabase();
+		$result = $dbr->newSelectQueryBuilder()
+			->select( [
 				'COALESCE(rd_namespace, page_namespace) AS namespace',
 				'COALESCE(rd_title, page_title) AS title'
-			],
-			[
-				'tk_page = page_id',
+			] )
+			->from( 'page' )
+			->join( 'titlekey', null, 'tk_page=page_id' )
+			->leftJoin( 'redirect', null, 'rd_from=tk_page' )
+			->where( [
 				'tk_namespace' => $ns,
-				'tk_key ' . $dbr->buildLike( $key, $dbr->anyString() ),
-			],
-			$method,
-			[
-				'ORDER BY' => ['page_is_redirect', 'tk_subpages', 'tk_key'],
-				'LIMIT' => $limit,
-				'OFFSET' => $offset,
-				'DISTINCT',
-			],
-			[
-				'redirect' => [
-					'LEFT JOIN',
-					'tk_page = rd_from',
-				],
-			]
-		);
-	}
-
-	/**
-	 * @param array $namespaces
-	 * @param string $search
-	 * @param int $limit
-	 * @param int $offset
-	 * @return string
-	 */
-	static function prefixSearch( $namespaces, $search, $limit, $offset ) {
-		$dbr = wfGetDB( DB_REPLICA );
-		$sql = self::buildPrefixSearchQuery(
-			$dbr, $namespaces, $search, $limit, $offset, __METHOD__
-		);
-		$result = $dbr->query( $sql, __METHOD__ );
+				$dbr->expr( 'tk_key', IExpression::LIKE, new LikeValue( $key, $dbr->anyString() ) ),
+			] )
+			->orderBy( [ 'page_is_redirect', 'tk_subpages', 'tk_key' ] )
+			->limit( $limit )
+			->offset( $offset )
+			->distinct()
+			->caller( __METHOD__ )
+			->fetchResultSet();
 
 		// Reformat useful data for future printing by JSON engine
-		$srchres = [];
+		$results = [];
 		foreach ( $result as $row ) {
-			$title = Title::makeTitle( $row->namespace, $row->title );
-			$srchres[] = $title; #->getPrefixedText();
+			$results[] = Title::makeTitle( $row->namespace, $row->title );
 		}
-		$result->free();
 
-		sort( $srchres, SORT_NATURAL | SORT_FLAG_CASE );
-
-		return $srchres;
+		sort( $results, SORT_NATURAL | SORT_FLAG_CASE );
+		return $results;
 	}
 
 	/**
 	 * Find matching titles after the default 'go' search exact match fails.
-	 * This'll let 'mcgee' match 'McGee' etc.
+	 * This will let 'mcgee' match 'McGee' etc.
 	 *
 	 * @param string $term
-	 * @param Title outparam &$title
+	 * @param Title &$title outparam
 	 * @return bool
 	 */
 	public static function searchGetNearMatch( $term, &$title ) {
@@ -326,29 +311,29 @@ class TitleKey extends SearchMySQL {
 	}
 
 	/**
-	 * @param array $ns
+	 * @param int $ns
 	 * @param string $text
 	 * @return Title|null
 	 */
 	private static function exactMatch( $ns, $text ) {
 		$key = self::normalize( $text );
 
-		$dbr = wfGetDB( DB_REPLICA );
-		$row = $dbr->selectRow(
-			[ 'titlekey', 'page' ],
-			[ 'page_namespace', 'page_title' ],
-			[
-				'tk_page = page_id',
+		$dbr = MediaWikiServices::getInstance()->getConnectionProvider()->getReplicaDatabase();
+		$row = $dbr->newSelectQueryBuilder()
+			->select( [ 'page_namespace', 'page_title' ] )
+			->from( 'page' )
+			->join( 'titlekey', null, 'tk_page=page_id' )
+			->where( [
 				'tk_namespace' => $ns,
 				'tk_key' => $key,
-			],
-			__METHOD__
-		);
+			] )
+			->caller( __METHOD__ )
+			->fetchRow();
 
 		if ( $row ) {
 			return Title::makeTitle( $row->page_namespace, $row->page_title );
-		} else {
-			return null;
 		}
+
+		return null;
 	}
 }
