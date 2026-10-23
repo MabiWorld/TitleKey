@@ -8,13 +8,15 @@ if ( $IP === false ) {
 }
 require_once "$IP/maintenance/Maintenance.php";
 
-// In case we want to do offline initialization...
+/* In case we want to do offline initialization...
 if ( !class_exists( 'TitleKey' ) ) {
-	require "$IP/includes/search/SearchEngine.php";
-	require "$IP/includes/search/SearchDatabase.php";
-	require "$IP/includes/search/SearchMySQL.php";
-	require __DIR__ . '/TitleKey_body.php';
-}
+	if ( !class_exists( 'SearchEngine' ) ) {
+		require "$IP/includes/search/SearchEngine.php";
+		require "$IP/includes/search/SearchDatabase.php";
+		require "$IP/includes/search/SearchMySQL.php";
+	}
+	require __DIR__ . '/../includes/TitleKey.php';
+}*/
 
 class RebuildTitleKeys extends Maintenance {
 	public function __construct() {
